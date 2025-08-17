@@ -1,0 +1,152 @@
+version: '3.8' # Specify the Docker Compose file format version
+
+services:
+  mysql:
+    image: mysql:8.0 # Use the official MySQL 8.0 image
+    container_name: mysql # A friendly name for your container
+    ports:
+      - "3306:3306" # Map port 3306 from the host to port 3306 in the container
+    environment:
+      # --- MySQL Configuration ---
+      # Set a strong root password for local development. Change this for production!
+      MYSQL_ROOT_PASSWORD: password
+
+      # Create multiple databases for your microservices.
+      # Separate database names with a comma.
+      # MYSQL_MULTIPLE_DATABASES: onboarding_service,customer_service,kyc_verification_service
+      MYSQL_DATABASE: local
+
+      # Optional: Create a default user and password for your services to connect with.
+      # This user will have access to all databases created via MYSQL_MULTIPLE_DATABASES.
+      MYSQL_USER: dev_user
+      MYSQL_PASSWORD: dev_password
+
+      # Set the character set and collation for better compatibility
+      MYSQL_INITDB_ARGS: "--character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci"
+    volumes:
+      # Persist data to a named volume on your host machine.
+      # This ensures your data isn't lost when the container is stopped or removed.
+      - mysql_data:/var/lib/mysql
+      # Mount an initialization script to grant privileges to the dev_user
+      # This script will run when the container starts for the first time
+      - ./init-db/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - app-network # Connect to the app network for inter-service communication
+    command: --default-authentication-plugin=mysql_native_password # Use native password plugin for compatibility
+
+      # Optional: Mount an initialization script if you need more complex setup
+      # For example, to create tables or insert initial data.
+      # - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # Give MySQL some time to start before checking
+    restart: always # Always restart the container if it stops
+
+  mongo:
+    image: mongo:6.0
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=dev_user
+      - MONGO_INITDB_ROOT_PASSWORD=dev_password
+      - MONGO_INITDB_DATABASE=local
+    volumes:
+      - mongodb-data:/data/db
+      - mongodb-config:/data/configdb
+      - ./init-db/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/local --quiet
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  postgres:
+    image: postgres:16-alpine # Using a specific and lightweight PostgreSQL image
+    container_name: postgres
+    restart: unless-stopped # Always restart unless explicitly stopped
+    environment:
+      # These variables are for the initial setup of the 'postgres' superuser.
+      # You'll use this user/password in init.sql to create other users/dbs.
+      POSTGRES_USER: admin # Default superuser for initial setup
+      POSTGRES_PASSWORD: password # !! CHANGE THIS !!
+      
+      # Optional: Set the default database created on first run (besides 'postgres')
+      # POSTGRES_DB: default_initial_db 
+
+    volumes:
+      # Persistent volume for PostgreSQL data (important for production!)
+      - pg_data:/var/lib/postgresql/data
+      
+      # Mount the initialization script directory
+      # Scripts in /docker-entrypoint-initdb.d/ are executed on first container start
+      - ./init-db/postgres-init.sql:/docker-entrypoint-initdb.d/postgres-init.sql:ro
+    networks:
+      - app-network
+    ports:
+      # Map container port 5432 to host port 5432
+      - "5432:5432"
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s # Give some time for the DB to initialize before checking
+
+
+  redis:
+    image: redis:7.2.5-alpine # Specific and lightweight version
+    container_name: redis
+    restart: unless-stopped
+    
+    # Use the mounted config file
+    # !! KEEP THIS IN DOCKER COMPOSE !!
+    # Other command line args can override redis.conf directives if needed
+    command: >
+      redis-server /usr/local/etc/redis/redis.conf
+      --requirepass PASSWORD
+      
+    volumes:
+      - redis_data:/data # Persistent volume for Redis data
+      
+      # Mount your custom redis.conf file
+      - ./redis/redis-conf/redis.conf:/usr/local/etc/redis/redis.conf
+    networks:
+      - app-network
+
+    ports:
+      - "6379:6379"
+    
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "PING"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+      
+    # deploy: # Uncomment and adjust for resource limits in production
+    #   resources:
+    #     limits:
+    #       cpus: '0.5'
+    #       memory: 512M
+  
+
+volumes:
+  # Define the named volume for MySQL data persistence
+  mysql_data:
+  pg_data: # Define the named volume for persistent data
+  mongodb-data:
+  mongodb-config:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge
